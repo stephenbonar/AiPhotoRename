@@ -23,102 +23,86 @@ from pillow_heif import register_heif_opener
 from PIL import Image
 from transformers import BlipProcessor, BlipForConditionalGeneration
 
-# def get_date_taken_from_heic(filepath):
-#     try:
-#         heif_file = pyheif.read(filepath)
-#         exif_data = None
-#         for metadata in heif_file.metadata or []:
-#             if metadata['type'] == 'Exif':
-#                 exif_data = metadata['data']
-#                 break
-#         if exif_data:
-#             exif_dict = piexif.load(exif_data)
-#             date_str = exif_dict['Exif'].get(piexif.ExifIFD.DateTimeOriginal)
-#             if date_str:
-#                 # date_str is bytes, e.g. b'2023:07:15 14:23:01'
-#                 date_str = date_str.decode()
-#                 return datetime.strptime(date_str, "%Y:%m:%d %H:%M:%S")
-#     except Exception as e:
-#         print(f"Error reading HEIC metadata: {e}")
-#     # Fallback: use file's modification time
-#     ts = os.path.getmtime(filepath)
-#     return datetime.fromtimestamp(ts)
 
-# def rename_heic_by_date(filepath):
-#     date_taken = get_date_taken_from_heic(filepath)
-#     if not date_taken:
-#         print(f"Could not determine date for {filepath}")
-#         return
-#     dir_name, orig_filename = os.path.split(filepath)
-#     ext = os.path.splitext(orig_filename)[1].lower()
-#     new_filename = date_taken.strftime("IMG_%Y%m%d_%H%M%S") + ext
-#     new_filepath = os.path.join(dir_name, new_filename)
-#     # Avoid overwriting existing files
-#     counter = 1
-#     while os.path.exists(new_filepath):
-#         new_filename = date_taken.strftime("IMG_%Y%m%d_%H%M%S") + f"_{counter}" + ext
-#         new_filepath = os.path.join(dir_name, new_filename)
-#         counter += 1
-#     os.rename(filepath, new_filepath)
-#     print(f"Renamed '{filepath}' to '{new_filepath}'")
+def get_date_time_part(exif_data):
+    date_time_original = None
+    if exif_data:
+        exif_dict = piexif.load(exif_data)
+        date_bytes = exif_dict['Exif'].get(piexif.ExifIFD.DateTimeOriginal)
+        if date_bytes:
+            date_string = date_bytes.decode()
+            date_format = "%Y:%m:%d %H:%M:%S"
+            date_time_original = datetime.strptime(date_string, date_format)
+    
+    if date_time_original:
+        year = date_time_original.year
+        month = date_time_original.month
+        day = date_time_original.day
+        hour = date_time_original.hour
+        minute = date_time_original.minute
+        second = date_time_original.second
+        part = f"{year}{month:02d}{day:02d}_{hour:02d}{minute:02d}{second:02d}"
+        return part
+
+    return None
+
+
+def get_caption_part():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # NOTE: On first run, take out the local_files_only=True to download the model.
+    # This will download to ~/.cache/huggingface
+    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True, use_fast=True)
+    model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True).to(device)
+
+    # Load and process image
+    temp_image = Image.open("/tmp/ai.jpg").convert("RGB")
+    inputs = processor(images=temp_image, return_tensors="pt").to(device)
+
+    # Generate caption
+    out = model.generate(**inputs)
+    caption = processor.decode(out[0], skip_special_tokens=True)
+
+    # Replace all non-alpha characters with underscores
+    caption = ''.join([c if c.isalpha() else '_' for c in caption])
+
+    return caption
+
 
 def rename_heic(path):
     try:
-        # Register HEIF opener so we can read HEIF files.
-        register_heif_opener()
-
-        # Open the HEIC image so we can extract the EXIF metadata.
-        img = Image.open(path)
-
-        # Try to get the original date taken so its available for renaming.
-        exif_data = img.info.get("exif")
-        date_time_original = None
-        if exif_data:
-            exif_dict = piexif.load(exif_data)
-            date_bytes = exif_dict['Exif'].get(piexif.ExifIFD.DateTimeOriginal)
-            if date_bytes:
-                date_string = date_bytes.decode()
-                print(f"Date taken: {date_string}")
-                date_format = "%Y:%m:%d %H:%M:%S"
-                date_time_original = datetime.strptime(date_string, date_format)
-
+        # Split out the path components so we can build a new filename.
         directory, filename = os.path.split(path)
         name, extension = os.path.splitext(filename)
 
-        if date_time_original:
-            year = date_time_original.year
-            month = date_time_original.month
-            day = date_time_original.day
-            hour = date_time_original.hour
-            minute = date_time_original.minute
-            second = date_time_original.second
-            new_name = f"{name}_{year}{month}{day}_{hour}{minute}{second}"
-            new_filename = new_name + extension
-            print(new_filename)
+        # Register HEIF opener so we can read HEIF files.
+        register_heif_opener()
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Open the image so we can work with it.
+        input_image = Image.open(path)
 
-        # NOTE: On first run, take out the local_files_only=True to download the model.
-        # This will download to ~/.cache/huggingface
-        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True, use_fast=True)
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True).to(device)
+        # Get the datetime part of the filename so it can be used in the rename.
+        exif_data = input_image.info.get("exif")
+        date_time_part = get_date_time_part(exif_data)
 
-        img.save("/tmp/ai.jpg", format="JPEG")
+        # Make a temporary jpeg version of the image for AI processing as not
+        # all formats such as HEIC are supported.
+        input_image.save("/tmp/ai.jpg", format="JPEG")
 
-        # Load and process image
-        image = Image.open("/tmp/ai.jpg").convert("RGB")
-        inputs = processor(images=image, return_tensors="pt").to(device)
+        # Get the caption part of the filename so it can be used in the rename.
+        caption_part = get_caption_part()
 
-        # Generate caption
-        out = model.generate(**inputs)
-        caption = processor.decode(out[0], skip_special_tokens=True)
-        print("Caption:", caption)
-        
+        new_filename = f"{name}_{date_time_part}_{caption_part}{extension}"
+
+        # Debug.
+        print(f"Original: {filename}, New: {new_filename}")
+
         #new_filepath = os.path.join(directory, new_filename)
         #os.rename(path, new_filepath)
         #print(f"Renamed '{path}' to '{new_filepath}'")
     except Exception as e:
         print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     # Print usage if file names were not specified at the command line.
