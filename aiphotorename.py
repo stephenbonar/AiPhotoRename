@@ -17,9 +17,11 @@
 import os
 import sys
 import piexif
+import torch
 from datetime import datetime
 from pillow_heif import register_heif_opener
 from PIL import Image
+from transformers import BlipProcessor, BlipForConditionalGeneration
 
 # def get_date_taken_from_heic(filepath):
 #     try:
@@ -62,13 +64,13 @@ from PIL import Image
 
 def rename_heic(path):
     try:
-        # Register HEIF opener so PIL can open HEIC files
+        # Register HEIF opener so we can read HEIF files.
         register_heif_opener()
 
-        # Open the HEIC image using PIL
+        # Open the HEIC image so we can extract the EXIF metadata.
         img = Image.open(path)
 
-        # Try to extract EXIF data
+        # Try to get the original date taken so its available for renaming.
         exif_data = img.info.get("exif")
         date_time_original = None
         if exif_data:
@@ -79,8 +81,44 @@ def rename_heic(path):
                 print(f"Date taken: {date_string}")
                 date_format = "%Y:%m:%d %H:%M:%S"
                 date_time_original = datetime.strptime(date_string, date_format)
+
+        directory, filename = os.path.split(path)
+        name, extension = os.path.splitext(filename)
+
+        if date_time_original:
+            year = date_time_original.year
+            month = date_time_original.month
+            day = date_time_original.day
+            hour = date_time_original.hour
+            minute = date_time_original.minute
+            second = date_time_original.second
+            new_name = f"{name}_{year}{month}{day}_{hour}{minute}{second}"
+            new_filename = new_name + extension
+            print(new_filename)
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # NOTE: On first run, take out the local_files_only=True to download the model.
+        # This will download to ~/.cache/huggingface
+        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True, use_fast=True)
+        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base", local_files_only=True).to(device)
+
+        img.save("/tmp/ai.jpg", format="JPEG")
+
+        # Load and process image
+        image = Image.open("/tmp/ai.jpg").convert("RGB")
+        inputs = processor(images=image, return_tensors="pt").to(device)
+
+        # Generate caption
+        out = model.generate(**inputs)
+        caption = processor.decode(out[0], skip_special_tokens=True)
+        print("Caption:", caption)
+        
+        #new_filepath = os.path.join(directory, new_filename)
+        #os.rename(path, new_filepath)
+        #print(f"Renamed '{path}' to '{new_filepath}'")
     except Exception as e:
-        print(f"Error reading HEIC metadata: {e}")
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     # Print usage if file names were not specified at the command line.
