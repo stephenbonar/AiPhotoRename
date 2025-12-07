@@ -44,7 +44,7 @@ python3 aiphotorename.py IMG_0000.JPG
 This would rename the file using the following naming convention:
 
 ```bash
-IMG_0000_YYYYMMDD_CAPTION
+YYYYMMDD_CAPTION_IMG_0000.JPG
 ```
 
 Where:
@@ -52,12 +52,16 @@ Where:
 - YYYMMDD is date taken
 - CAPTION is a brief AI generated caption in CamelCase.
 
-You may specify multiple photo filenames separated by spaces.
-In bash, using wildcards are the best way to specify multiple files as arguments.
-For instance, if you have photos in a directory, you can run:
+You may specify multiple photo filenames separated by spaces. The script now also supports specifying directory paths, where all image files in that directory will be renamed. 
 
 ```bash
-python3 aiphotorename.py /home/user/photos/*
+python3 aiphotorename.py /home/user/photos/
+```
+
+You can also check subdirectories by using the --recursive switch:
+
+```bash
+python3 aiphotorename.py --recursive /home/user/photos/
 ```
 
 The script ignores any files that are not photos.
@@ -65,13 +69,13 @@ The script ignores any files that are not photos.
 To preview the changes it would make and ensure it is selecting the right photos, you can run it with the --dry-run parameter:
 
 ```bash
-python3 aiphotorename.py --dry-run /home/user/photos/*
+python3 aiphotorename.py --dry-run /home/user/photos/
 ```
 
 Additionally, you can have the script prompt for confirmation on each rename:
 
 ```bash
-python3 aiphotorename.py --confirm /home/user/photos/*
+python3 aiphotorename.py --confirm /home/user/photos/
 ```
 
 To see all available options, run:
@@ -82,6 +86,4 @@ python3 aiphotorename.py --help
 
 # Warning
 
-While this is the first release of the script, it should be considered experimental.
-It has gone through some limited testing and I have successfully used it for my own purposes.
-Use at your own risk!
+This script is considered experimental. I have successfully used it to rename much of my own photo library, but it has not be tested extensively across multiple platforms. If you want to try this script on your own photos, I recommend backing them up first. Use at your own risk!
