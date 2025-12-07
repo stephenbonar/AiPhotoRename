@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # aiphotorename.py
 #
 # Copyright (C) 2025 Stephen Bonar
@@ -14,11 +15,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+AI Photo Renamer - A script for renaming photo files based on date taken and
+AI caption.
+
+This script renames photo files by appending:
+1. Date taken from photo metadata (YYYYMMDD format)
+2. AI-generated caption in PascalCase
+
+Format: YYYYMMDD_AiCaption_OriginalFilename.ext
+"""
+
 import os
 import sys
 import piexif
 import torch
 import argparse
+import re
 from datetime import datetime
 from pillow_heif import register_heif_opener
 from PIL import Image
@@ -33,7 +46,7 @@ TOKENS_TO_SKIP = {
     'are', 'was', 'were', 'with', 'to', 'for', 'around', 'that'
 }
 PROGRAM_NAME = "AI Photo Renamer"
-PROGRAM_VERSION = "v1.0.0"
+PROGRAM_VERSION = "v1.1.0"
 PROGRAM_COPYRIGHT = "Copyright (C) 2025 Stephen Bonar"
 
 # Global debug variables.
@@ -41,12 +54,13 @@ minlength = 255
 maxlength = 0
 
 
-def generate_date_time_part(exif_data):
+def generate_date_time_part(exif_data: bytes | None) -> str | None:
     """
-    Extracts the original date and time from EXIF data and returns a string
-    in the format 'YYYYMMDD' for use in filenames.
+    Extracts the original date and time from EXIF data. If it exists, 
+    returns a string in the format 'YYYYMMDD' for use in filenames, otherwise
+    returns None.
 
-    Args:
+    Parameters:
         exif_data (bytes or None): The EXIF data from an image file.
 
     Returns:
@@ -71,21 +85,28 @@ def generate_date_time_part(exif_data):
     return None
 
 
-def generate_caption_part(offline):
+def generate_caption_part(offline: bool) -> str:
     """
-    Generates a CamelCase caption string suitable for use in a filename
+    Generates a PascalCase caption string suitable for use in a filename
     by running an AI image captioning model on a temporary JPEG image.
+    Stopwords, duplcates, and non-alphabetic tokens are removed to keep
+    filenames concise.
+
+    Parameters:
+        offline (bool): If True, use only local model files.
 
     Returns:
-        str: The processed caption string with stopwords and duplicates removed.
+        str: The PascalCase caption string with stopwords and duplicates
+        removed.
     """
 
     # Establishes the device to run the model on, either the GPU or CPU. GPU is
     # preferred if available as GPUs are much faster for AI and learning. 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # NOTE: On first run, take out the local_files_only=True to download the
-    # model. This will download to ~/.cache/huggingface
+    # NOTE: On first run, ensure local_files_only is set to false to download
+    # the model. This will download to ~/.cache/huggingface. You can do this
+    # by setting the offline function parameter to False.
     #
     # Loads a pre-trained BLIP image captioning processor from the Hugging Face
     # model hub.
@@ -136,7 +157,7 @@ def generate_caption_part(offline):
 
         if not skip_token and token.isalpha():
             # Capitalize the first letter of the token so the caption part of
-            # the filename is CamelCase.
+            # the filename is PascalCase.
             caption_part += token.capitalize()
 
             tokens_added.add(token)
@@ -144,16 +165,22 @@ def generate_caption_part(offline):
     return caption_part
 
 
-def generate_ai_filename(path, filename_stem, filename_extension, offline):
+def generate_ai_filename(
+    path: str,
+    filename_stem: str,
+    filename_extension: str,
+    offline: bool
+) -> str | None:
     """
     Generates a new filename for an image by combining the original filename
     stem, the date extracted from EXIF data (if available), and an 
     AI-generated caption.
 
-    Args:
+    Parameters:
         path (str): The file path to the image.
         filename_stem (str): The base name of the file without extension.
         filename_extension (str): The file extension, including the dot.
+        offline (bool): If True, use only local model files.
 
     Returns:
         str or None: The newly generated filename, or None if an error occurs.
@@ -182,23 +209,25 @@ def generate_ai_filename(path, filename_stem, filename_extension, offline):
         caption_part = generate_caption_part(offline)
 
         # Build the new filename using the available parts.
-        new_filename = f"{filename_stem}"
+        new_filename = ""
         if date_time_part:
-            new_filename += f"_{date_time_part}_"
-        else:
-            new_filename += "_"
-        new_filename += f"{caption_part}{filename_extension}"
+            new_filename += f"{date_time_part}_"
+        new_filename += f"{caption_part}_{filename_stem}{filename_extension}"
     except Exception as e:
         print(f"Error generating new filename for {path}: {e}")
 
     return new_filename
 
 
-def rename_photo(original_path, directory, new_filename):
+def rename_photo(
+    original_path: str,
+    directory: str,
+    new_filename: str
+) -> None:
     """
     Renames a photo file to a new filename within the specified directory.
 
-    Args:
+    Parameters:
         original_path (str): The current file path of the image.
         directory (str): The directory where the file should be renamed.
         new_filename (str): The new filename to assign to the image.
@@ -217,11 +246,61 @@ def rename_photo(original_path, directory, new_filename):
         print(f"Error renaming file: {e}")
 
 
+def get_image_files_from_directory(
+    directory: str,
+    recursive: bool = False
+) -> list[str]:
+    """
+    Returns a list of image file paths from a directory.
+
+    Parameters:
+        directory (str): The directory to search for image files.
+        recursive (bool): If True, walks subdirectories.
+
+    Returns:
+        list: List of image file paths.
+    """
+
+    image_files = []
+    if recursive:
+        for root, _, files in os.walk(directory):
+            for file in files:
+                image_files.append(os.path.join(root, file))
+    else:
+        for file in os.listdir(directory):
+            full_path = os.path.join(directory, file)
+            if os.path.isfile(full_path):
+                image_files.append(full_path)
+    return image_files
+
+
+def is_correct_format(filename: str, caption_part: str) -> bool:
+    """
+    Checks if the filename matches the expected format:
+    YYYYMMDD_AiCaption_OriginalFilename.ext
+
+    Parameters:
+        filename (str): The filename to check.
+        caption_part (str): The expected PascalCase caption part.
+
+    Returns:
+        bool: True if the filename matches the expected format, else False.
+    """
+    # Regex to ensure the date portion is 8 digits (YYYYMMDD).
+    date_regex = r"\d{8}"
+
+    # Full regex pattern for the expected filename format.
+    pattern = rf"^{date_regex}_{caption_part}_.+\.[a-zA-Z0-9]+$"
+
+    return re.match(pattern, filename) is not None
+
+
 if __name__ == "__main__":
     # Register HEIF opener so we can read HEIF files.
     register_heif_opener()
 
-    # Ensure configured TEMP_DIR exists
+    # Ensure configured TEMP_DIR exists to ensure the script is able to create
+    # temporary files in the appropriate location for the current platform.
     if not os.path.exists(TEMP_DIR):
         print(f"Error: TEMP_DIR '{TEMP_DIR}' does not exist.")
         sys.exit(1)
@@ -250,6 +329,11 @@ if __name__ == "__main__":
         help="Download model files if not present (run in online mode)"
     )
     parser.add_argument(
+        "-r", "--recursive",
+        action="store_true",
+        help="Recursively rename files in directories"
+    )
+    parser.add_argument(
         "image_files",
         nargs="*",
         help="Image files to process"
@@ -264,40 +348,83 @@ if __name__ == "__main__":
     if not args.image_files:
         parser.error("the following arguments are required: image_files")
 
-    # Set offline mode based on --init flag
+    # Set offline mode based on --init flag.
     offline = not args.init
 
-    # Process each file, checking if Pillow can open it.
-    for image_path in args.image_files:
+    files_to_process = []
+    for input_path in args.image_files:
+        if os.path.isdir(input_path):
+            # The specified image path is a directory, so get all image files
+            # from the directory.
+            files = get_image_files_from_directory(
+                input_path, recursive=args.recursive
+            )
+            files_to_process.extend(files)
+        else:
+            # The specified image path is a file, so add it directly.
+            files_to_process.append(input_path)
+
+    for image_path in files_to_process:
         if os.path.isfile(image_path):
             try:
-                # Try opening with Pillow to check if it's a supported image.
+                # Attempt to open the file as an image. If it fails, we know
+                # it's not an image and we can skip it.
                 with Image.open(image_path) as img:
-                    # Split the path components so we can build a new filename.
                     directory, filename = os.path.split(image_path)
-                    filename_stem, filename_ext= os.path.splitext(filename)
+                    filename_stem, filename_ext = os.path.splitext(filename)
 
-                    new_filename = generate_ai_filename(
-                        image_path, filename_stem, filename_ext, offline
+                    # The exif data is needed to get the date taken.
+                    exif_data = img.info.get("exif")
+
+                    # Get the date part of the filename so we can build the new
+                    # filename.
+                    date_time_part = generate_date_time_part(exif_data)
+
+                    # Save a temporary jpeg version of the image for AI
+                    # processing as HEIC and other formats are not supported.
+                    img.save(f"{TEMP_DIR}/ai.jpg", format="JPEG")
+
+                    # Get the caption part of the filename using AI so we can
+                    # finish building the new filename.
+                    caption_part = generate_caption_part(offline)
+
+                    # Build the expected new file name using the generated
+                    # parts. We make it the expected filename to ensure it
+                    # hasn't already been renamed.
+                    expected_filename = ""
+                    if date_time_part:
+                        expected_filename += f"{date_time_part}_"
+                    expected_filename += (
+                        f"{caption_part}_{filename_stem}{filename_ext}"
                     )
 
-                    if new_filename:
-                        print(f"Renaming {filename} to {new_filename}", end="")
-                        if not args.dry_run:
-                            if args.confirm:
-                                prompt = " Proceed? [y/n]: "
-                                response = input(prompt).strip().lower()
-                                if response != "y":
-                                    print(" Skipped.")
-                                    continue
-                                else:
-                                    print()
+                    # Only rename if not already in correct format as we don't
+                    # want double renamed filenames.
+                    if filename == expected_filename:
+                        print(
+                            f"Skipping {filename}: already in correct format."
+                        )
+                        continue
+
+                    # If we get this far, we know we can safely rename the file.
+                    new_filename = expected_filename
+                    print(f"Renaming {filename} to {new_filename}", end="")
+
+                    if not args.dry_run:
+                        if args.confirm:
+                            prompt = " Proceed? [y/n]: "
+                            response = input(prompt).strip().lower()
+                            if response != "y":
+                                print(" Skipped.")
+                                continue
                             else:
                                 print()
-                            rename_photo(image_path, directory, new_filename)
                         else:
-                            print(" (dry-run)")
+                            print()
+                        rename_photo(image_path, directory, new_filename)
+                    else:
+                        print(" (dry-run)")
             except Exception as e:
                 print(f"Skipping file: {image_path}, error: {e}")
         else:
-            print(f"Skipping non-existent image file: {image_path}")
+            print(f"Skipping, not a file: {image_path}")
